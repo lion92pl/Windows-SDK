@@ -15,6 +15,9 @@ using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Media.Imaging;
 using Windows.UI.Xaml.Navigation;
 using DJIVideoParser;
+using Windows.Media.Core;
+using Windows.Media.MediaProperties;
+using System.Collections.Concurrent;
 
 namespace DJIWindowsSDKSample.FPV
 {
@@ -31,15 +34,31 @@ namespace DJIWindowsSDKSample.FPV
         {
             base.OnNavigatedFrom(e);
             InitializeVideoFeedModule();
-            await DJI.WindowsSDK.DJISDKManager.Instance.ComponentManager.GetCameraHandler(0, 0).SetCameraWorkModeAsync(new CameraWorkModeMsg { value = CameraWorkMode.SHOOT_PHOTO });
+            await DJISDKManager.Instance.ComponentManager.GetCameraHandler(0, 0).SetCameraWorkModeAsync(new CameraWorkModeMsg { value = CameraWorkMode.SHOOT_PHOTO });
+            DJISDKManager.Instance.ComponentManager.GetRemoteControllerHandler(0, 0).RCShutterButtonDownChanged += FPVPage_RCShutterButtonDownChanged;
+            DJISDKManager.Instance.ComponentManager.GetCameraHandler(0, 0).NewlyGeneratedMediaFileChanged += FPVPage_NewlyGeneratedMediaFileChanged;
+        }
+
+        private void FPVPage_NewlyGeneratedMediaFileChanged(object sender, GeneratedMediaFileInfo? value)
+        {
+            var fileType = value.Value.type;
+        }
+
+        private void FPVPage_RCShutterButtonDownChanged(object sender, BoolMsg? value)
+        {
+            if (value.HasValue && value.Value.value)
+            {
+                TakePhoto(null, null);
+            }
         }
 
         protected override void OnNavigatedFrom(NavigationEventArgs e)
         {
             base.OnNavigatedTo(e);
             UninitializeVideoFeedModule();
+            DJISDKManager.Instance.ComponentManager.GetRemoteControllerHandler(0, 0).RCShutterButtonDownChanged -= FPVPage_RCShutterButtonDownChanged;
+            DJISDKManager.Instance.ComponentManager.GetCameraHandler(0, 0).NewlyGeneratedMediaFileChanged -= FPVPage_NewlyGeneratedMediaFileChanged;
         }
-
 
         private async void InitializeVideoFeedModule()
         {
@@ -65,7 +84,6 @@ namespace DJIWindowsSDKSample.FPV
                 OnCameraTypeChanged(this, type.value);
             });
         }
-    
 
         private void UninitializeVideoFeedModule()
         {
@@ -108,6 +126,10 @@ namespace DJIWindowsSDKSample.FPV
             }
         }
 
+        private void TakePhoto(object sender, RoutedEventArgs args)
+        {
+            DJISDKManager.Instance.ComponentManager.GetCameraHandler(0, 0).StartShootPhotoAsync();
+        }
     }
 }
 
