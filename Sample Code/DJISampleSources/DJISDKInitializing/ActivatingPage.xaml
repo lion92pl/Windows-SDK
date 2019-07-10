@@ -18,7 +18,7 @@
 
                 </StackPanel>
                 <TextBlock> Activating Code: </TextBlock>
-                <TextBox Name="activatingCodeTextBox" Width="300" HorizontalAlignment="Left"></TextBox>
+                <TextBox Name="activatingCodeTextBox" Width="300" HorizontalAlignment="Left" Text="7b11d6c877eb7d812bc25c5b"></TextBox>
                 <Button Margin="0,5,0,0" Click="RegisterButton_Click"> Activate </Button>
                 <TextBlock 
                      Name="activationInformation"
