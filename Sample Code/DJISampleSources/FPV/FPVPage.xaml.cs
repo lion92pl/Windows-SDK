@@ -18,12 +18,17 @@ using DJIVideoParser;
 using Windows.Media.Core;
 using Windows.Media.MediaProperties;
 using System.Collections.Concurrent;
+using System.Threading.Tasks;
 
 namespace DJIWindowsSDKSample.FPV
 {
     public sealed partial class FPVPage : Page
     {
         private DJIVideoParser.Parser videoParser;
+        private ConcurrentQueue<(byte[], TimeSpan)> _frames = new ConcurrentQueue<(byte[], TimeSpan)>();
+        private MemoryStream _dataStream;
+        private TimeSpan _dataStreamTimestamp;
+        private System.DateTime? _startTime;
 
         public FPVPage()
         {
@@ -57,7 +62,7 @@ namespace DJIWindowsSDKSample.FPV
             base.OnNavigatedTo(e);
             UninitializeVideoFeedModule();
             DJISDKManager.Instance.ComponentManager.GetRemoteControllerHandler(0, 0).RCShutterButtonDownChanged -= FPVPage_RCShutterButtonDownChanged;
-            DJISDKManager.Instance.ComponentManager.GetCameraHandler(0, 0).NewlyGeneratedMediaFileChanged -= FPVPage_NewlyGeneratedMediaFileChanged;
+            DJISDKManager.Instance.ComponentManager.GetCameraHandler(0, 0).NewlyGeneratedMediaFileChanged += FPVPage_NewlyGeneratedMediaFileChanged;
         }
 
         private async void InitializeVideoFeedModule()
@@ -69,35 +74,122 @@ namespace DJIWindowsSDKSample.FPV
                 if (videoParser == null)
                 {
                     videoParser = new DJIVideoParser.Parser();
-                    videoParser.Initialize(delegate (byte[] data)
-                    {
-                        //Note: This function must be called because we need DJI Windows SDK to help us to parse frame data.
-                        return DJISDKManager.Instance.VideoFeeder.ParseAssitantDecodingInfo(0, data);
-                    });
+                    //videoParser.Initialize(delegate (byte[] data)
+                    //{
+                    //    //Note: This function must be called because we need DJI Windows SDK to help us to parse frame data.
+                    //    return DJISDKManager.Instance.VideoFeeder.ParseAssitantDecodingInfo(0, data);
+                    //});
                     //Set the swapChainPanel to display and set the decoded data callback.
-                    videoParser.SetSurfaceAndVideoCallback(0, 0, swapChainPanel, ReceiveDecodedData);
-                    DJISDKManager.Instance.VideoFeeder.GetPrimaryVideoFeed(0).VideoDataUpdated += OnVideoPush;
+                    //videoParser.SetSurfaceAndVideoCallback(0, 0, swapChainPanel, ReceiveDecodedData);
+                    var videoDesc = new VideoStreamDescriptor(VideoEncodingProperties.CreateH264());
+                    videoDesc.EncodingProperties.FrameRate.Denominator = 1;
+                    videoDesc.EncodingProperties.FrameRate.Numerator = 30;
+                    var source = new MediaStreamSource(videoDesc);
+                    source.BufferTime = TimeSpan.Zero;
+                    source.IsLive = true;
+                    source.Starting += Source_Starting;
+                    source.SampleRequested += Source_SampleRequested;
+                    mediaElement.RealTimePlayback = true;
+                    mediaElement.SetMediaStreamSource(source);
+                    //DJISDKManager.Instance.VideoFeeder.GetPrimaryVideoFeed(0).VideoDataUpdated += OnVideoPush;
                 }
                 //get the camera type and observe the CameraTypeChanged event.
-                DJISDKManager.Instance.ComponentManager.GetCameraHandler(0, 0).CameraTypeChanged += OnCameraTypeChanged;
+                //DJISDKManager.Instance.ComponentManager.GetCameraHandler(0, 0).CameraTypeChanged += OnCameraTypeChanged;
                 var type = await DJISDKManager.Instance.ComponentManager.GetCameraHandler(0, 0).GetCameraTypeAsync();
-                OnCameraTypeChanged(this, type.value);
+                //OnCameraTypeChanged(this, type.value);
             });
+        }
+
+        private async void Source_Starting(MediaStreamSource sender, MediaStreamSourceStartingEventArgs args)
+        {
+            if (_startTime.HasValue)
+            {
+                //args.Request.SetActualStartPosition((System.DateTime.UtcNow - _startTime.Value));
+            }
+            DJISDKManager.Instance.VideoFeeder.GetPrimaryVideoFeed(0).VideoDataUpdated += OnVideoPush;
+            var deferral = args.Request.GetDeferral();
+            while (!_startTime.HasValue)
+            {
+                await Task.Delay(10);
+            }
+            await Task.Delay(100);
+            deferral.Complete();
+        }
+
+        private async void Source_SampleRequested(MediaStreamSource sender, MediaStreamSourceSampleRequestedEventArgs args)
+        {
+            var deferal = args.Request.GetDeferral();
+
+            var sample = await GetSample(args);
+            try
+            {
+                args.Request.Sample = await MediaStreamSample.CreateFromStreamAsync(sample.stream.AsInputStream(), (uint)sample.stream.Length, sample.timestamp);
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    sample = await GetSample(args);
+                    args.Request.Sample = await MediaStreamSample.CreateFromStreamAsync(sample.stream.AsInputStream(), (uint)sample.stream.Length, sample.timestamp);
+                }
+                catch
+                {
+                    sender.NotifyError(MediaStreamSourceErrorStatus.Other);
+                }
+            }
+            deferal.Complete();
+        }
+
+        private async Task<(MemoryStream stream, TimeSpan timestamp)> GetSample(MediaStreamSourceSampleRequestedEventArgs args)
+        {
+            if (_dataStream == null || _dataStream.Length == 0)
+            {
+                uint progress = 0;
+                do
+                {
+                    args.Request.ReportSampleProgress(Math.Min(progress++, 99));
+                    await Task.Delay(20);
+                } while (_dataStream == null || _dataStream.Length == 0);
+
+                args.Request.ReportSampleProgress(100);
+            }
+
+            var streamTimestamp = _dataStreamTimestamp;
+            var stream = _dataStream;
+            _dataStream = null;
+            stream.Position = 0;
+
+            return (stream, streamTimestamp);
         }
 
         private void UninitializeVideoFeedModule()
         {
             if (DJISDKManager.Instance.SDKRegistrationResultCode == SDKError.NO_ERROR)
             {
-                videoParser.SetSurfaceAndVideoCallback(0, 0, null, null);
+                //videoParser.SetSurfaceAndVideoCallback(0, 0, null, null);
                 DJISDKManager.Instance.VideoFeeder.GetPrimaryVideoFeed(0).VideoDataUpdated -= OnVideoPush;
+                mediaElement.Stop();
             }
         }
 
         //raw data
         void OnVideoPush(VideoFeed sender, byte[] bytes)
         {
-            videoParser.PushVideoData(0, 0, bytes, bytes.Length);
+            if (!_startTime.HasValue)
+            {
+                _startTime = System.DateTime.UtcNow;
+            }
+
+            var stream = _dataStream;
+            if (_dataStream == null)
+            {
+                _dataStream = new MemoryStream();
+                _dataStreamTimestamp = System.DateTime.UtcNow - _startTime.Value;
+            }
+
+            _dataStream.Write(bytes, 0, bytes.Length);
+            //videoParser.PushVideoData(0, 0, bytes, bytes.Length);
+            //_frames.Enqueue((bytes, System.DateTime.UtcNow - _startTime.Value));
         }
 
         //Decode data. Do nothing here. This function would return a bytes array with image data in RGBA format.
